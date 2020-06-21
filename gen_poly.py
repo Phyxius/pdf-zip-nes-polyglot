@@ -181,18 +181,8 @@ def main():
 
 		with open(message_path, 'rb') as message_file:
 			message_bytes = message_file.read()
-
-			#WARNING
-			#this is notoriously suboptimal, as we may very well have an issue when adding a number (eg 9 to 10, 99 to 100)
-			#therefore, we add a useless linebreak at the end of the message (so that if the last char gets cut, it didn't matter anyway)
-			len_msg_comm = len(gen_message_append_command(start_offset = offset, length = len(message_bytes) + 24, filename = path_leaf(out_path)))
-			#minimum overhead of the command string ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
-			message_command = gen_message_append_command(start_offset = offset, length = len(message_bytes) + 1 + len_msg_comm, filename = path_leaf(out_path)) 
-			#notice the "+1" there ? This is to account for the additional linebreak     ->~~~~~~~~~~~~~~~~~~>^
-			
-			new_message = message_command.encode('utf-8') + message_bytes + "\n".encode('utf-8')
-			outfile.write(new_message)
-			message_len = len(new_message)
+			outfile.write(message_bytes)
+			message_len = len(message_bytes)
 			print("The ASCII art begins @" + str(offset) + " and lasts " + str(message_len) + " bytes")
 			offset += message_len
 			print("ZIP file will have its offsets off by " + str(offset) + " bytes")
