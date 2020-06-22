@@ -3,8 +3,9 @@
 from __future__ import print_function
 import argparse, sys, zipfile, ntpath
 import os.path
-from bitstring import ConstBitStream
 import shutil
+import struct
+import base64
 
 from io import BytesIO
 
@@ -18,17 +19,53 @@ def filelike_size(f):
 	f.seek(old_file_position, os.SEEK_SET)
 	return size
 
-def path_leaf(path):
-	head, tail = ntpath.split(path)
-	return tail or ntpath.basename(head)
+def gen_whitespace_program(data_to_print):
+	# https://stackoverflow.com/questions/10321978/integer-to-bitfield-as-a-list
+	def bitfield(n):
+		return "".join(['\t' if digit=='1' else ' ' for digit in bin(n)[2:]]).rjust(8, ' ')
+	program = ""
+	for c in data_to_print:
+		program += '  ' + bitfield(ord(c)) + "\n"
+		program += "\t\n  " # print
+	program += "\n\n\n"
+	return program
 
-def find_offset(of, in_data):
-	bitstream = ConstBitStream(in_data)
-	offset = bitstream.find(of, bytealigned=False)
-	return offset
-
-def gen_message_append_command(start_offset, length, filename):
-	return u"tail -c +" + str(start_offset) + u" " + filename + u" | head -c " + str(length) + u'\n'
+def gen_bf_program(data_to_print):
+	program = ""
+	singles = ""
+	tens = ""
+	goBack = ""
+	program += 10 * "+"
+	program += "[>"
+	program += 10 * "+"
+	program += "["
+	for c in (ord(c) for c in data_to_print):
+		program += ">"
+		program += (c // 100) * "+"
+		tens += ">"
+		if (c - (c//100)*100)//10 <= 5:
+			tens += ((c - (c//100)*100)//10) * "+"
+		else:
+			program += "+"
+			tens += (10 - (c - (c//100)*100)//10) * "-"
+		singles += ">"
+		if c % 10 <= 5:
+			singles += (c%10) * "+"
+		else: 
+			tens += "+"
+			singles += (10 - (c%10)) * "-"
+		singles += "."
+		goBack += "<"
+	goBack += "-"
+	program += goBack
+	program += "]"
+	program += tens
+	program += "<"
+	program += goBack
+	program += "]>"
+	program += singles
+	program += ">>>+[>,]" #loop forever at the end
+	return program
 
 class InMemoryZipFile(object):
 	#mostly courtesy of Justin Ethier and @ruamel, stackoverflow.com/questions/2463770
@@ -41,7 +78,7 @@ class InMemoryZipFile(object):
 
 		self.in_memory_data = BytesIO()
 		# Create the in-memory zipfile
-		self.in_memory_zip = zipfile.ZipFile( self.in_memory_data, "w", compression, False )
+		self.in_memory_zip = zipfile.ZipFile(self.in_memory_data, "w", compression, False )
 		self.in_memory_zip.debug = debug
 		self.compression_map = dict()
 		self.compression = compression
@@ -151,8 +188,11 @@ parser = argparse.ArgumentParser(description='Generate a ZIP/PDF/Whatever polygl
 parser.add_argument('--out', dest='out_path', action='store', help='set the path of the resulting file', required=True)
 parser.add_argument('--in', dest='in_path', action='store', help='path of the PDF to which to append', required=True)
 parser.add_argument('--zip', dest='zip_array', action='store', nargs='+', help='path(s) to the file(s) going to be zipped and included in the PDF', required=True)
-parser.add_argument('--message', dest='message_path', action='store', help='path to the plaintext file', required=True)
-parser.add_argument('--header', dest='header_path', action='store', help='path to the header file, that will be added before the PDF', required=True)
+parser.add_argument('--html', dest='html_path', action='store', help='path to the HTML file', required=True)
+parser.add_argument('--jpeg', dest='jpeg_path', action='store', help='path to the JPEG file, that will be added before the PDF', required=True)
+parser.add_argument('--tar', dest='tar', action='store', help='path to a tar file that will be added after the JPEG data')
+parser.add_argument('--ws-print', dest='ws_data', action='store', help='Data that will be printed when the file is run as a Whitespace program', required=True)
+parser.add_argument('--bf-print', dest='bf_data', action='store', help='Data that will be printed when the file is run as a Brainfuck program', required=True)
 
 def main():
 	args = parser.parse_args()
@@ -161,38 +201,48 @@ def main():
 	tempout_path = out_path + ".temp"
 	in_path = args.in_path
 	zip_array = args.zip_array
-	message_path = args.message_path
-	header_path = args.header_path
+	html_path = args.html_path
+	jpeg_path = args.jpeg_path
+	tar_path = args.tar
+	ws_data = gen_whitespace_program(args.ws_data).encode()
+	bf_data = gen_bf_program(args.bf_data).encode()
 
 	if os.path.exists(out_path):
 		errprint("File " + out_path + " ALREADY EXISTS, gonna overwrite !!!!!!!")
 		#exit(1)
 
-	offset = 0
-
 	with open(tempout_path, 'xb') as outfile:
-		with open(header_path, 'rb') as headerfile:
-			offset += filelike_size(headerfile)
-			shutil.copyfileobj(headerfile, outfile)
-
-		#with open(in_path, 'rb') as infile:
-		#	offset += filelike_size(infile)
-		#	shutil.copyfileobj(infile, outfile)
-
-		with open(message_path, 'rb') as message_file:
-			message_bytes = message_file.read()
-			outfile.write(message_bytes)
-			message_len = len(message_bytes)
-			print("The ASCII art begins @" + str(offset) + " and lasts " + str(message_len) + " bytes")
-			offset += message_len
-			print("ZIP file will have its offsets off by " + str(offset) + " bytes")
-
+		outfile.write(b'\xFF\xD8') # JPEG header
+		custom_chunk = ws_data + bf_data + b"<!--"
+		padding_length = 512 - (len(custom_chunk) + 6) % 512 - 4 # header length
+		custom_chunk += b'F' * padding_length
+		outfile.write(b'\xFF\xEA')
+		outfile.write(struct.pack('>h', len(custom_chunk) + 2)) #write length
+		# pad until the tar header will be at a multiple of 500 bytes
+		outfile.write(custom_chunk)
+		with open(tar_path, 'rb') as tar_file:
+			tar = tar_file.read()
+			outfile.write(b'\xFF\xEA')
+			outfile.write(struct.pack('>h', len(tar) + 2)) #write length
+			outfile.write(tar)
+		with open(jpeg_path, 'rb') as jpeg:
+			if jpeg.read(2) != b'\xFF\xD8': raise NotImplementedError()
+			outfile.write(jpeg.read())
+		with open(html_path, 'rb') as html_file:
+			html = f"""
+				--><html><script language='Javascript'>
+				page="{base64.b64encode(html_file.read()).decode("UTF-8")}";
+				document.getElementsByTagName("html")[0].innerHTML=window.atob(page)
+				</script></html><!--
+			"""
+			outfile.write(b'\xFF\xEA') #application-specific chunk 
+			outfile.write(struct.pack('>h', len(html) + 2)) #write length
+			outfile.write(html.encode('UTF8'))
 		with InMemoryZipFile() as memzip:
 			memzip.append(in_path, compress_type=zipfile.ZIP_STORED)
 			for file_to_zip in zip_array:
 				memzip.append(file_to_zip, compress_type=zipfile.ZIP_DEFLATED) #deflated
 			size_of_zipped = filelike_size(memzip.in_memory_data)
-			offset += size_of_zipped
 
 			outfile.write(memzip.close_and_return_data())
 
