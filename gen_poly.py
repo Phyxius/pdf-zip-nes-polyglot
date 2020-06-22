@@ -20,6 +20,7 @@ def filelike_size(f):
     return size
 
 def gen_whitespace_program(data_to_print):
+    data_to_print += "\n"
     # https://stackoverflow.com/questions/10321978/integer-to-bitfield-as-a-list
     def bitfield(n):
         return "".join(['\t' if digit=='1' else ' ' for digit in bin(n)[2:]]).rjust(8, ' ')
@@ -31,6 +32,8 @@ def gen_whitespace_program(data_to_print):
     return program
 
 def gen_bf_program(data_to_print):
+    data_to_print += "\n"
+    # translated from https://codegolf.stackexchange.com/a/12477
     program = ""
     singles = ""
     tens = ""
